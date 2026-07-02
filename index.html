@@ -1085,9 +1085,9 @@ function AdminTab({ profile }) {
       h("p", { style: { fontSize: 12.5, color: "var(--muted)", marginBottom: 14, lineHeight: 1.5 } }, "Keys live only in Render's environment — this just controls which provider is primary/fallback."),
       h("div", { style: { display: "flex", gap: 10, flexWrap: "wrap" } },
         h("select", { className: "select", style: { width: "auto" }, value: config.primary, onChange: e => setConfig({ ...config, primary: e.target.value }) },
-          h("option", { value: "gemini" }, "Gemini"), h("option", { value: "groq" }, "Groq")),
+          h("option", { value: "gemini" }, "Gemini"), h("option", { value: "groq" }, "Groq"), h("option", { value: "openai" }, "OpenAI (ChatGPT)")),
         h("select", { className: "select", style: { width: "auto" }, value: config.fallback, onChange: e => setConfig({ ...config, fallback: e.target.value }) },
-          h("option", { value: "groq" }, "Groq"), h("option", { value: "gemini" }, "Gemini")),
+          h("option", { value: "groq" }, "Groq"), h("option", { value: "gemini" }, "Gemini"), h("option", { value: "openai" }, "OpenAI (ChatGPT)")),
         h("button", { className: "btn btn-primary btn-sm", onClick: saveConfig, disabled: saving }, saving ? h("span", { className: "spinner" }) : "Save")
       )
     ),
