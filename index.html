@@ -1038,6 +1038,15 @@ function GroupDetailModal({ row, allGroups, allStudents, onClose, onChanged }) {
   );
 }
 
+const AI_PROVIDERS = [
+  { value: "gemini", label: "Gemini" },
+  { value: "groq", label: "Groq" },
+  { value: "openai", label: "OpenAI (ChatGPT)" },
+  { value: "mistral", label: "Mistral" },
+  { value: "cerebras", label: "Cerebras" },
+  { value: "openrouter", label: "OpenRouter" }
+];
+
 function AdminTab({ profile }) {
   const [users, setUsers] = useState([]);
   const [config, setConfig] = useState({ primary: "gemini", fallback: "groq" });
@@ -1082,12 +1091,16 @@ function AdminTab({ profile }) {
   return h(React.Fragment, null,
     h("div", { className: "card", style: { marginBottom: 18 } },
       h("h3", { style: { marginBottom: 4, fontSize: 15.5 } }, "AI Provider"),
-      h("p", { style: { fontSize: 12.5, color: "var(--muted)", marginBottom: 14, lineHeight: 1.5 } }, "Keys live only in Render's environment — this just controls which provider is primary/fallback."),
-      h("div", { style: { display: "flex", gap: 10, flexWrap: "wrap" } },
-        h("select", { className: "select", style: { width: "auto" }, value: config.primary, onChange: e => setConfig({ ...config, primary: e.target.value }) },
-          h("option", { value: "gemini" }, "Gemini"), h("option", { value: "groq" }, "Groq"), h("option", { value: "openai" }, "OpenAI (ChatGPT)")),
-        h("select", { className: "select", style: { width: "auto" }, value: config.fallback, onChange: e => setConfig({ ...config, fallback: e.target.value }) },
-          h("option", { value: "groq" }, "Groq"), h("option", { value: "gemini" }, "Gemini"), h("option", { value: "openai" }, "OpenAI (ChatGPT)")),
+      h("p", { style: { fontSize: 12.5, color: "var(--muted)", marginBottom: 14, lineHeight: 1.5 } }, "Keys live only in Render's environment. If a provider has no key configured there, it's skipped automatically — grading also cascades through the remaining providers on quota errors, regardless of what's picked here."),
+      h("div", { style: { display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-end" } },
+        h("div", null,
+          h("span", { className: "label" }, "Primary"),
+          h("select", { className: "select", style: { width: "auto" }, value: config.primary, onChange: e => setConfig({ ...config, primary: e.target.value }) },
+            AI_PROVIDERS.map(p => h("option", { key: p.value, value: p.value }, p.label)))),
+        h("div", null,
+          h("span", { className: "label" }, "Fallback"),
+          h("select", { className: "select", style: { width: "auto" }, value: config.fallback, onChange: e => setConfig({ ...config, fallback: e.target.value }) },
+            AI_PROVIDERS.map(p => h("option", { key: p.value, value: p.value }, p.label)))),
         h("button", { className: "btn btn-primary btn-sm", onClick: saveConfig, disabled: saving }, saving ? h("span", { className: "spinner" }) : "Save")
       )
     ),
