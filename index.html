@@ -207,6 +207,37 @@ tbody tr:last-child td{border-bottom:none;}
   .nav-item{flex-direction:column;gap:4px;padding:7px 10px;font-size:10.5px;}
   .main{padding-bottom:96px;}
 }
+
+/* ── Notification bell ─────────────────────────────── */
+.notif-wrap{position:relative;}
+.notif-dot{position:absolute;top:5px;right:5px;min-width:15px;height:15px;padding:0 3px;border-radius:8px;
+  background:var(--rejected);color:#fff;font-size:9.5px;font-weight:700;line-height:15px;text-align:center;}
+.notif-dropdown{position:absolute;top:calc(100% + 8px);right:0;width:340px;max-height:420px;overflow-y:auto;
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow-lg);z-index:40;}
+.notif-header{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border-bottom:1px solid var(--border);
+  font-size:12.5px;font-weight:700;color:var(--text);}
+.notif-item{display:flex;gap:10px;padding:11px 14px;border-bottom:1px solid var(--border);cursor:default;}
+.notif-item:last-child{border-bottom:none;}
+.notif-item.unread{background:var(--accent-soft);}
+.notif-item-dot{width:7px;height:7px;border-radius:50%;background:var(--accent);margin-top:6px;flex-shrink:0;}
+.notif-item-dot.read{background:transparent;}
+.notif-item-body{flex:1;min-width:0;}
+.notif-item-title{font-size:12.5px;font-weight:600;color:var(--text);line-height:1.4;}
+.notif-item-meta{font-size:11px;color:var(--muted-2);margin-top:3px;}
+.notif-empty{padding:28px 14px;text-align:center;font-size:12.5px;color:var(--muted);}
+
+/* ── Sortable table headers ─────────────────────────── */
+th.sortable{cursor:pointer;user-select:none;white-space:nowrap;}
+th.sortable:hover{color:var(--text);}
+.sort-arrow{display:inline-block;margin-left:4px;font-size:10px;opacity:.55;}
+.sort-arrow.active{opacity:1;color:var(--accent);}
+
+/* ── Overdue banner ──────────────────────────────────── */
+.overdue-banner{display:flex;align-items:flex-start;gap:11px;padding:13px 15px;border-radius:var(--radius);
+  background:var(--revision-soft);border:1px solid var(--revision);margin-bottom:16px;}
+.overdue-banner svg{flex-shrink:0;color:var(--revision-strong);margin-top:1px;}
+.overdue-banner-title{font-size:13px;font-weight:700;color:var(--revision-strong);}
+.overdue-banner-body{font-size:12.5px;color:var(--text-2);margin-top:2px;line-height:1.5;}
 </style>
 </head>
 <body>
@@ -311,6 +342,102 @@ function GradeRing({ score, status, size = 56 }) {
 function StatusPill({ status }) {
   const meta = STATUS_META[status] || { label: "Not Started", cls: "pill-neutral" };
   return h("span", { className: "pill " + meta.cls }, meta.label);
+}
+
+/* ── Small helpers shared by the QOL features below ──── */
+function timeAgo(iso) {
+  if (!iso) return "";
+  const s = Math.floor((Date.now() - new Date(iso)) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return Math.floor(s / 60) + "m ago";
+  if (s < 86400) return Math.floor(s / 3600) + "h ago";
+  return Math.floor(s / 86400) + "d ago";
+}
+
+function useDeadlines() {
+  const [deadlines, setDeadlines] = useState({});
+  useEffect(() => {
+    authedFetch("/api/config/deadlines").then(r => r.json()).then(d => setDeadlines(d.deadlines || {})).catch(() => {});
+  }, []);
+  return deadlines;
+}
+
+/* ── Notification bell: in-app notifications, backed by the
+   `notifications` table (see supabase-notifications.sql). Falls back to
+   a 30s poll in addition to realtime, so it still works if realtime
+   isn't enabled on the table. ─────────────────────────────────────── */
+function NotificationBell({ profile }) {
+  const [items, setItems] = useState([]);
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef();
+
+  const load = useCallback(async () => {
+    const { data } = await sb.from("notifications").select("*")
+      .eq("user_id", profile.id).order("created_at", { ascending: false }).limit(25);
+    setItems(data || []);
+  }, [profile.id]);
+
+  useEffect(() => {
+    load();
+    const poll = setInterval(load, 30000);
+    const channel = sb.channel("notif-" + profile.id)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "notifications", filter: `user_id=eq.${profile.id}` },
+        () => load())
+      .subscribe();
+    return () => { clearInterval(poll); sb.removeChannel(channel); };
+  }, [profile.id, load]);
+
+  useEffect(() => {
+    function onClickOutside(e) { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); }
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, []);
+
+  const unread = items.filter(n => !n.read).length;
+
+  async function markAllRead() {
+    if (!unread) return;
+    setItems(prev => prev.map(n => ({ ...n, read: true })));
+    await sb.from("notifications").update({ read: true }).eq("user_id", profile.id).eq("read", false);
+  }
+
+  return h("div", { className: "notif-wrap", ref: wrapRef },
+    h("button", {
+      className: "btn btn-ghost btn-icon", title: "Notifications",
+      onClick: () => { setOpen(o => !o); if (!open) markAllRead(); }
+    },
+      h("svg", { width: 17, height: 17, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" },
+        h("path", { d: "M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" }), h("path", { d: "M13.73 21a2 2 0 0 1-3.46 0" })),
+      unread > 0 && h("span", { className: "notif-dot" }, unread > 9 ? "9+" : unread)
+    ),
+    open && h("div", { className: "notif-dropdown" },
+      h("div", { className: "notif-header" }, "Notifications"),
+      items.length === 0
+        ? h("div", { className: "notif-empty" }, "You're all caught up.")
+        : items.map(n => h("div", { key: n.id, className: "notif-item" + (n.read ? "" : " unread") },
+            h("div", { className: "notif-item-dot" + (n.read ? " read" : "") }),
+            h("div", { className: "notif-item-body" },
+              h("div", { className: "notif-item-title" }, n.title),
+              h("div", { className: "notif-item-meta" }, timeAgo(n.created_at))
+            )
+          ))
+    )
+  );
+}
+
+/* ── Overdue banner: reads /api/config/deadlines and flags sections
+   that are due (or past due) and not yet approved. Works for both a
+   student's own sections and, for teachers, an aggregate count. ───── */
+function OverdueBanner({ overdueLabels }) {
+  if (!overdueLabels.length) return null;
+  return h("div", { className: "overdue-banner" },
+    h("svg", { width: 18, height: 18, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" },
+      h("path", { d: "M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" }), h("path", { d: "M12 9v4M12 17h.01" })),
+    h("div", null,
+      h("div", { className: "overdue-banner-title" }, "Deadline approaching"),
+      h("div", { className: "overdue-banner-body" }, overdueLabels.join(", ") + " — not yet approved.")
+    )
+  );
 }
 
 /* ════════════════════════════════════════════════════
@@ -567,7 +694,7 @@ async function extractText(file) {
 /* ════════════════════════════════════════════════════
    STUDENT DASHBOARD
    ════════════════════════════════════════════════════ */
-function SectionUploadCard({ profile, sectionDef, submission, onUpdated }) {
+function SectionUploadCard({ profile, sectionDef, submission, onUpdated, dueDate }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const fileRef = useRef();
@@ -603,6 +730,10 @@ function SectionUploadCard({ profile, sectionDef, submission, onUpdated }) {
         }).eq("id", submissionId);
       }
 
+      // Fire-and-forget: let the teacher's dashboard know a submission
+      // landed, independent of whether AI grading below succeeds.
+      authedFetch("/api/notify/new-submission", { method: "POST", body: JSON.stringify({ submissionId }) }).catch(() => {});
+
       const res = await authedFetch("/api/grade", {
         method: "POST",
         body: JSON.stringify({ submissionId, sectionId: sectionDef.id, text })
@@ -625,6 +756,8 @@ function SectionUploadCard({ profile, sectionDef, submission, onUpdated }) {
         h("div", { style: { fontWeight: 600, fontSize: 15 } }, sectionDef.label),
         h("div", { style: { fontSize: 12.5, color: "var(--muted)", marginTop: 2 } },
           submission?.file_name || "No file uploaded yet"),
+        dueDate && submission?.ai_status !== "approved" && h("div", { style: { fontSize: 11.5, color: "var(--revision-strong)", marginTop: 3, fontWeight: 600 } },
+          "Due " + new Date(dueDate).toLocaleDateString()),
         trend != null && h("div", { style: { fontSize: 12, marginTop: 4, color: trend >= 0 ? "var(--approved)" : "var(--rejected)" } },
           (trend >= 0 ? "▲ +" : "▼ ") + trend + " vs. last attempt")
       ),
@@ -649,9 +782,13 @@ function SectionUploadCard({ profile, sectionDef, submission, onUpdated }) {
   );
 }
 
+const STATUS_SORT_RANK = { rejected: 0, needs_revision: 1, error: 1, undefined: 2, approved: 3 };
+
 function StudentDashboard({ profile }) {
   const [subs, setSubs] = useState({});
   const [loading, setLoading] = useState(true);
+  const [sortBy, setSortBy] = useState("default"); // "default" | "status" | "deadline"
+  const deadlines = useDeadlines();
 
   const load = useCallback(async () => {
     const { data } = profile.group_id
@@ -667,6 +804,28 @@ function StudentDashboard({ profile }) {
 
   const doneCount = SECTIONS.filter(s => subs[s.id]?.ai_status === "approved").length;
   const pct = Math.round((doneCount / SECTIONS.length) * 100);
+
+  const today = new Date();
+  const overdueLabels = SECTIONS.filter(s => {
+    if (subs[s.id]?.ai_status === "approved") return false;
+    const due = deadlines[s.id];
+    if (!due) return false;
+    return (new Date(due) - today) / 86400000 <= 3; // due within 3 days or past due
+  }).map(s => s.label);
+
+  const orderedSections = useMemo(() => {
+    const arr = [...SECTIONS];
+    if (sortBy === "status") {
+      arr.sort((a, b) => STATUS_SORT_RANK[subs[a.id]?.ai_status] - STATUS_SORT_RANK[subs[b.id]?.ai_status]);
+    } else if (sortBy === "deadline") {
+      arr.sort((a, b) => {
+        const da = deadlines[a.id] ? new Date(deadlines[a.id]) : new Date(8640000000000000);
+        const db = deadlines[b.id] ? new Date(deadlines[b.id]) : new Date(8640000000000000);
+        return da - db;
+      });
+    }
+    return arr;
+  }, [sortBy, subs, deadlines]);
 
   return h("div", { className: "main" },
     h("div", { className: "card fade-up", style: { marginBottom: 22 } },
@@ -687,9 +846,16 @@ function StudentDashboard({ profile }) {
       h("div", { className: "progress-track", style: { marginTop: 16 } },
         h("div", { className: "progress-fill", style: { width: pct + "%" } }))
     ),
+    h(OverdueBanner, { overdueLabels }),
+    h("div", { style: { display: "flex", justifyContent: "flex-end", marginBottom: 10 } },
+      h("select", { className: "select", style: { width: "auto" }, value: sortBy, onChange: e => setSortBy(e.target.value) },
+        h("option", { value: "default" }, "Default order"),
+        h("option", { value: "status" }, "Sort: needs attention first"),
+        h("option", { value: "deadline" }, "Sort: soonest deadline first"))
+    ),
     loading ? h("div", { className: "empty-state" }, h("span", { className: "spinner" })) :
-      SECTIONS.map(s => h(SectionUploadCard, {
-        key: s.id, profile, sectionDef: s, submission: subs[s.id],
+      orderedSections.map(s => h(SectionUploadCard, {
+        key: s.id, profile, sectionDef: s, submission: subs[s.id], dueDate: deadlines[s.id],
         onUpdated: (id, updated) => setSubs(prev => ({ ...prev, [id]: updated }))
       }))
   );
@@ -698,6 +864,22 @@ function StudentDashboard({ profile }) {
 /* ════════════════════════════════════════════════════
    TEACHER / ADMIN DASHBOARD
    ════════════════════════════════════════════════════ */
+const OVERVIEW_SORT_ACCESSORS = {
+  student: s => (s.profiles?.full_name || s.profiles?.email || "").toLowerCase(),
+  section: s => SECTIONS.find(x => x.id === s.section_id)?.label || s.section_id,
+  category: s => s.category || "",
+  score: s => s.ai_score ?? -1,
+  status: s => STATUS_SORT_RANK[s.ai_status] ?? 2,
+  provider: s => s.ai_provider || ""
+};
+
+function SortableTh({ label, col, sortCol, sortDir, onSort, style }) {
+  const active = sortCol === col;
+  return h("th", { className: "sortable", style, onClick: () => onSort(col) },
+    label,
+    h("span", { className: "sort-arrow" + (active ? " active" : "") }, active ? (sortDir === "asc" ? "▲" : "▼") : "↕"));
+}
+
 function TeacherOverviewTab({ subs, onRefresh }) {
   const [catFilter, setCatFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -705,16 +887,34 @@ function TeacherOverviewTab({ subs, onRefresh }) {
   const [selected, setSelected] = useState(new Set());
   const [active, setActive] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [sortCol, setSortCol] = useState(null);
+  const [sortDir, setSortDir] = useState("asc");
 
-  const filtered = useMemo(() => subs.filter(s => {
-    if (catFilter && s.category !== catFilter) return false;
-    if (statusFilter && s.ai_status !== statusFilter) return false;
-    if (search) {
-      const hay = (s.profiles?.full_name + " " + s.profiles?.email + " " + (s.team_emails || []).join(" ")).toLowerCase();
-      if (!hay.includes(search.toLowerCase())) return false;
+  function onSort(col) {
+    if (sortCol === col) setSortDir(d => d === "asc" ? "desc" : "asc");
+    else { setSortCol(col); setSortDir("asc"); }
+  }
+
+  const filtered = useMemo(() => {
+    let rows = subs.filter(s => {
+      if (catFilter && s.category !== catFilter) return false;
+      if (statusFilter && s.ai_status !== statusFilter) return false;
+      if (search) {
+        const hay = (s.profiles?.full_name + " " + s.profiles?.email + " " + (s.team_emails || []).join(" ")).toLowerCase();
+        if (!hay.includes(search.toLowerCase())) return false;
+      }
+      return true;
+    });
+    if (sortCol) {
+      const accessor = OVERVIEW_SORT_ACCESSORS[sortCol];
+      rows = [...rows].sort((a, b) => {
+        const va = accessor(a), vb = accessor(b);
+        const cmp = typeof va === "number" ? va - vb : String(va).localeCompare(String(vb));
+        return sortDir === "asc" ? cmp : -cmp;
+      });
     }
-    return true;
-  }), [subs, catFilter, statusFilter, search]);
+    return rows;
+  }, [subs, catFilter, statusFilter, search, sortCol, sortDir]);
 
   function toggle(id) {
     const next = new Set(selected);
@@ -759,8 +959,13 @@ function TeacherOverviewTab({ subs, onRefresh }) {
       h("div", { className: "table-wrap" },
         h("table", null,
           h("thead", null, h("tr", null,
-            h("th", { style: { width: 36 } }), h("th", null, "Student"), h("th", null, "Section"), h("th", null, "Category"),
-            h("th", null, "Score"), h("th", null, "Status"), h("th", null, "Provider")
+            h("th", { style: { width: 36 } }),
+            h(SortableTh, { label: "Student", col: "student", sortCol, sortDir, onSort }),
+            h(SortableTh, { label: "Section", col: "section", sortCol, sortDir, onSort }),
+            h(SortableTh, { label: "Category", col: "category", sortCol, sortDir, onSort }),
+            h(SortableTh, { label: "Score", col: "score", sortCol, sortDir, onSort }),
+            h(SortableTh, { label: "Status", col: "status", sortCol, sortDir, onSort }),
+            h(SortableTh, { label: "Provider", col: "provider", sortCol, sortDir, onSort })
           )),
           h("tbody", null,
             filtered.length === 0 ? h("tr", null, h("td", { colSpan: 7 },
@@ -859,14 +1064,43 @@ function TeacherStatsTab({ subs }) {
   );
 }
 
+const TEAMS_SORT_ACCESSORS = {
+  group: r => r.group.name.toLowerCase(),
+  category: r => r.group.category || "",
+  members: r => r.members.length,
+  approved: r => r.approved,
+  overdue: r => SECTIONS.length - r.approved
+};
+
 function TeacherTeamsTab({ subs }) {
   const [groups, setGroups] = useState([]);
   const [students, setStudents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [catFilter, setCatFilter] = useState("");
   const [search, setSearch] = useState("");
+  const [overdueOnly, setOverdueOnly] = useState(false);
   const [active, setActive] = useState(null); // drilled-into group
   const [busy, setBusy] = useState(false);
+  const [sortCol, setSortCol] = useState(null);
+  const [sortDir, setSortDir] = useState("asc");
+  const deadlines = useDeadlines();
+
+  function onSort(col) {
+    if (sortCol === col) setSortDir(d => d === "asc" ? "desc" : "asc");
+    else { setSortCol(col); setSortDir("asc"); }
+  }
+
+  // A group counts as "overdue" if any section is due within 3 days (or
+  // past due) per the admin-configured deadlines and isn't approved yet.
+  function isGroupOverdue(groupSubs) {
+    const today = new Date();
+    return SECTIONS.some(sec => {
+      const due = deadlines[sec.id];
+      if (!due) return false;
+      if ((new Date(due) - today) / 86400000 > 3) return false;
+      return groupSubs.find(s => s.section_id === sec.id)?.ai_status !== "approved";
+    });
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -887,17 +1121,29 @@ function TeacherTeamsTab({ subs }) {
     const members = students.filter(s => s.group_id === g.id);
     const groupSubs = subs.filter(s => s.group_id === g.id);
     const approved = SECTIONS.filter(sec => groupSubs.find(s => s.section_id === sec.id)?.ai_status === "approved").length;
-    return { group: g, members, groupSubs, approved };
-  }), [groups, students, subs]);
+    return { group: g, members, groupSubs, approved, overdue: isGroupOverdue(groupSubs) };
+  }), [groups, students, subs, deadlines]);
 
-  const filtered = useMemo(() => rows.filter(r => {
-    if (catFilter && r.group.category !== catFilter) return false;
-    if (search) {
-      const hay = (r.group.name + " " + r.members.map(m => m.full_name + " " + m.email).join(" ")).toLowerCase();
-      if (!hay.includes(search.toLowerCase())) return false;
+  const filtered = useMemo(() => {
+    let out = rows.filter(r => {
+      if (catFilter && r.group.category !== catFilter) return false;
+      if (overdueOnly && !r.overdue) return false;
+      if (search) {
+        const hay = (r.group.name + " " + r.members.map(m => m.full_name + " " + m.email).join(" ")).toLowerCase();
+        if (!hay.includes(search.toLowerCase())) return false;
+      }
+      return true;
+    });
+    if (sortCol) {
+      const accessor = TEAMS_SORT_ACCESSORS[sortCol];
+      out = [...out].sort((a, b) => {
+        const va = accessor(a), vb = accessor(b);
+        const cmp = typeof va === "number" ? va - vb : String(va).localeCompare(String(vb));
+        return sortDir === "asc" ? cmp : -cmp;
+      });
     }
-    return true;
-  }), [rows, catFilter, search]);
+    return out;
+  }, [rows, catFilter, search, overdueOnly, sortCol, sortDir]);
 
   async function reassign(studentId, groupId) {
     setBusy(true);
@@ -929,6 +1175,9 @@ function TeacherTeamsTab({ subs }) {
       h("select", { className: "select", style: { width: "auto" }, value: catFilter, onChange: e => setCatFilter(e.target.value) },
         h("option", { value: "" }, "All categories"), categories.map(c => h("option", { key: c, value: c }, c))),
       h("input", { className: "input", style: { width: 230 }, placeholder: "Search group or member…", value: search, onChange: e => setSearch(e.target.value) }),
+      h("label", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: "var(--text-2)", cursor: "pointer" } },
+        h("input", { type: "checkbox", checked: overdueOnly, onChange: e => setOverdueOnly(e.target.checked) }),
+        "Overdue only"),
       h("div", { style: { flex: 1 } }),
       h("button", { className: "btn btn-outline btn-sm", onClick: exportCsv }, "Export CSV")
     ),
@@ -936,10 +1185,15 @@ function TeacherTeamsTab({ subs }) {
       h("div", { className: "table-wrap" },
         h("table", null,
           h("thead", null, h("tr", null,
-            h("th", null, "Group"), h("th", null, "Category"), h("th", null, "Join Code"),
-            h("th", null, "Members"), h("th", null, "Sections Approved"), h("th", null))),
+            h(SortableTh, { label: "Group", col: "group", sortCol, sortDir, onSort }),
+            h(SortableTh, { label: "Category", col: "category", sortCol, sortDir, onSort }),
+            h("th", null, "Join Code"),
+            h(SortableTh, { label: "Members", col: "members", sortCol, sortDir, onSort }),
+            h(SortableTh, { label: "Sections Approved", col: "approved", sortCol, sortDir, onSort }),
+            h(SortableTh, { label: "Overdue", col: "overdue", sortCol, sortDir, onSort }),
+            h("th", null))),
           h("tbody", null,
-            filtered.length === 0 ? h("tr", null, h("td", { colSpan: 6 },
+            filtered.length === 0 ? h("tr", null, h("td", { colSpan: 7 },
               h("div", { className: "empty-state" }, "No groups match these filters."))) :
             filtered.map(r => h("tr", { key: r.group.id, style: { cursor: "pointer" }, onClick: () => setActive(r) },
               h("td", null, h("span", { style: { fontWeight: 600 } }, r.group.name)),
@@ -947,6 +1201,7 @@ function TeacherTeamsTab({ subs }) {
               h("td", null, h("span", { style: { fontFamily: "var(--font-mono)" } }, r.group.join_code)),
               h("td", null, r.members.length ? r.members.map(m => m.full_name || m.email).join(", ") : "—"),
               h("td", null, h("span", { style: { fontFamily: "var(--font-mono)", fontWeight: 600 } }, `${r.approved}/${SECTIONS.length}`)),
+              h("td", null, r.overdue ? h("span", { className: "pill pill-revision" }, "Overdue") : "—"),
               h("td", { onClick: e => e.stopPropagation() },
                 h("button", { className: "btn btn-outline btn-sm", onClick: () => setActive(r) }, "Manage"))
             ))
@@ -1051,6 +1306,8 @@ function AdminTab({ profile }) {
   const [users, setUsers] = useState([]);
   const [config, setConfig] = useState({ primary: "gemini", fallback: "groq" });
   const [saving, setSaving] = useState(false);
+  const [deadlines, setDeadlines] = useState({});
+  const [savingDeadlines, setSavingDeadlines] = useState(false);
 
   const load = useCallback(async () => {
     const { data } = await sb.from("profiles").select("*").order("created_at", { ascending: false });
@@ -1059,7 +1316,19 @@ function AdminTab({ profile }) {
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
     authedFetch("/api/admin/config").then(r => r.json()).then(d => d.config && setConfig(d.config)).catch(() => {});
+    authedFetch("/api/config/deadlines").then(r => r.json()).then(d => setDeadlines(d.deadlines || {})).catch(() => {});
   }, []);
+
+  async function saveDeadlines() {
+    setSavingDeadlines(true);
+    try {
+      await authedFetch("/api/config/deadlines", { method: "POST", body: JSON.stringify(deadlines) });
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      setSavingDeadlines(false);
+    }
+  }
 
   async function setApproval(userId, approved) {
     try {
@@ -1102,6 +1371,23 @@ function AdminTab({ profile }) {
           h("select", { className: "select", style: { width: "auto" }, value: config.fallback, onChange: e => setConfig({ ...config, fallback: e.target.value }) },
             AI_PROVIDERS.map(p => h("option", { key: p.value, value: p.value }, p.label)))),
         h("button", { className: "btn btn-primary btn-sm", onClick: saveConfig, disabled: saving }, saving ? h("span", { className: "spinner" }) : "Save")
+      )
+    ),
+    h("div", { className: "card", style: { marginBottom: 18 } },
+      h("h3", { style: { marginBottom: 4, fontSize: 15.5 } }, "Section Deadlines"),
+      h("p", { style: { fontSize: 12.5, color: "var(--muted)", marginBottom: 14, lineHeight: 1.5 } },
+        "Drives the overdue banner on both dashboards and the daily reminder email (needs a Render Cron Job hitting /api/cron/deadline-reminders — see the comment above that handler in server.js)."),
+      h("div", { style: { display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-end" } },
+        SECTIONS.map(s => h("div", { key: s.id },
+          h("span", { className: "label" }, s.label),
+          h("input", {
+            className: "input", type: "date", style: { width: "auto" },
+            value: deadlines[s.id] || "",
+            onChange: e => setDeadlines({ ...deadlines, [s.id]: e.target.value })
+          })
+        )),
+        h("button", { className: "btn btn-primary btn-sm", onClick: saveDeadlines, disabled: savingDeadlines },
+          savingDeadlines ? h("span", { className: "spinner" }) : "Save")
       )
     ),
     h("div", { className: "card", style: { padding: 0 } },
@@ -1266,6 +1552,7 @@ function App() {
           )
         ),
         h("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
+          h(NotificationBell, { profile }),
           h("div", { style: { display: "flex", alignItems: "center", gap: 9, paddingRight: 10, marginRight: 2, borderRight: "1px solid var(--border)" } },
             h("div", { className: "avatar" }, (profile.full_name || profile.email || "?").charAt(0).toUpperCase()),
             h("span", { style: { fontSize: 13, fontWeight: 500, color: "var(--text-2)", maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, profile.full_name || profile.email)
