@@ -1122,8 +1122,13 @@ function TeacherTeamsTab({ subs, profile }) {
 
   async function reassign(studentId, groupId) {
     setBusy(true);
-    await sb.from("profiles").update({ group_id: groupId || null }).eq("id", studentId);
+    const { data, error } = await sb.from("profiles").update({ group_id: groupId || null }).eq("id", studentId).select("id");
     setBusy(false);
+    if (error) { alert("Couldn't move student: " + error.message); return; }
+    if (!data || data.length === 0) {
+      alert("The update didn't apply — your account likely doesn't have permission to edit other students' profiles. This needs a Row Level Security policy on the \"profiles\" table allowing teachers/admins to UPDATE rows that aren't their own.");
+      return;
+    }
     load();
   }
 
@@ -1201,14 +1206,18 @@ function GroupDetailModal({ row, allGroups, allStudents, onClose, onChanged }) {
 
   async function removeMember(studentId) {
     setBusy(true);
-    await sb.from("profiles").update({ group_id: null }).eq("id", studentId);
+    const { data, error } = await sb.from("profiles").update({ group_id: null }).eq("id", studentId).select("id");
     setBusy(false);
+    if (error) { alert("Couldn't remove member: " + error.message); return; }
+    if (!data || data.length === 0) { alert("The update didn't apply — this account likely lacks permission to edit other students' profiles (check profiles table RLS)."); return; }
     onChanged();
   }
   async function moveMember(studentId, groupId) {
     setBusy(true);
-    await sb.from("profiles").update({ group_id: groupId }).eq("id", studentId);
+    const { data, error } = await sb.from("profiles").update({ group_id: groupId }).eq("id", studentId).select("id");
     setBusy(false);
+    if (error) { alert("Couldn't move member: " + error.message); return; }
+    if (!data || data.length === 0) { alert("The update didn't apply — this account likely lacks permission to edit other students' profiles (check profiles table RLS)."); return; }
     onChanged();
   }
   async function deleteGroup() {
@@ -1287,8 +1296,13 @@ function CreateGroupModal({ profile, ungrouped, onClose, onCreated }) {
       .select("*").single();
     if (gErr) { setSaving(false); setError(gErr.message); return; }
     if (selected.size > 0) {
-      const { error: pErr } = await sb.from("profiles").update({ group_id: g.id }).in("id", [...selected]);
+      const { data: updated, error: pErr } = await sb.from("profiles").update({ group_id: g.id }).in("id", [...selected]).select("id");
       if (pErr) { setSaving(false); setError(pErr.message); return; }
+      if (!updated || updated.length < selected.size) {
+        setSaving(false);
+        setError("The group was created, but student(s) couldn't be added — your account likely lacks permission to edit other students' profiles (a Row Level Security policy on \"profiles\" needs to allow teacher/admin UPDATEs). You can retry adding members from the group's Manage view.");
+        return;
+      }
     }
     setSaving(false);
     onCreated();
