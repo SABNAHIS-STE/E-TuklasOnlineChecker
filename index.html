@@ -1079,13 +1079,14 @@ function TeacherStatsTab({ subs }) {
   );
 }
 
-function TeacherTeamsTab({ subs }) {
+function TeacherTeamsTab({ subs, profile }) {
   const [groups, setGroups] = useState([]);
   const [students, setStudents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [catFilter, setCatFilter] = useState("");
   const [search, setSearch] = useState("");
   const [active, setActive] = useState(null); // drilled-into group
+  const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -1150,6 +1151,7 @@ function TeacherTeamsTab({ subs }) {
         h("option", { value: "" }, "All categories"), categories.map(c => h("option", { key: c, value: c }, c))),
       h("input", { className: "input", style: { width: 230 }, placeholder: "Search group or member…", value: search, onChange: e => setSearch(e.target.value) }),
       h("div", { style: { flex: 1 } }),
+      h("button", { className: "btn btn-primary btn-sm", onClick: () => setCreating(true) }, "+ Create Group"),
       h("button", { className: "btn btn-outline btn-sm", onClick: exportCsv }, "Export CSV")
     ),
     h("div", { className: "card", style: { padding: 0, marginBottom: ungrouped.length ? 18 : 0 } },
@@ -1189,7 +1191,8 @@ function TeacherTeamsTab({ subs }) {
         )
       )
     ),
-    active && h(GroupDetailModal, { row: active, allGroups: groups, allStudents: students, onClose: () => setActive(null), onChanged: () => { load(); } })
+    active && h(GroupDetailModal, { row: active, allGroups: groups, allStudents: students, onClose: () => setActive(null), onChanged: () => { load(); } }),
+    creating && h(CreateGroupModal, { profile, ungrouped, onClose: () => setCreating(false), onCreated: () => { setCreating(false); load(); } })
   );
 }
 
@@ -1259,6 +1262,73 @@ function GroupDetailModal({ row, allGroups, allStudents, onClose, onChanged }) {
         })
       ),
       h("button", { className: "btn btn-danger", disabled: busy, onClick: deleteGroup }, "Delete Group")
+    )
+  );
+}
+
+function CreateGroupModal({ profile, ungrouped, onClose, onCreated }) {
+  const [name, setName] = useState("");
+  const [category, setCategory] = useState("");
+  const [selected, setSelected] = useState(new Set());
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  function toggle(id) {
+    const next = new Set(selected);
+    next.has(id) ? next.delete(id) : next.add(id);
+    setSelected(next);
+  }
+
+  async function create() {
+    if (!name.trim()) { setError("Enter a group name."); return; }
+    setSaving(true); setError("");
+    const { data: g, error: gErr } = await sb.from("groups")
+      .insert({ name: name.trim(), category: category || null, created_by: profile.id })
+      .select("*").single();
+    if (gErr) { setSaving(false); setError(gErr.message); return; }
+    if (selected.size > 0) {
+      const { error: pErr } = await sb.from("profiles").update({ group_id: g.id }).in("id", [...selected]);
+      if (pErr) { setSaving(false); setError(pErr.message); return; }
+    }
+    setSaving(false);
+    onCreated();
+  }
+
+  return h("div", { className: "modal-overlay", onClick: onClose },
+    h("div", { className: "modal", onClick: e => e.stopPropagation() },
+      h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 } },
+        h("div", null,
+          h("h3", { style: { fontSize: 17 } }, "Create Group"),
+          h("div", { style: { fontSize: 12.5, color: "var(--muted)", marginTop: 2 } }, "Name it, set a category, and optionally add ungrouped students now.")
+        ),
+        h("button", { className: "btn btn-ghost btn-icon", onClick: onClose, "aria-label": "Close" },
+          h("svg", { width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" }, h("path", { d: "M18 6 6 18M6 6l12 12" })))
+      ),
+      h("label", { className: "label" }, "Group Name"),
+      h("input", { className: "input", value: name, onChange: e => setName(e.target.value), placeholder: "e.g. Team Photosynthesis", style: { marginBottom: 14 } }),
+      h("label", { className: "label" }, "Category"),
+      h("select", { className: "select", value: category, onChange: e => setCategory(e.target.value), style: { marginBottom: 16 } },
+        h("option", { value: "" }, "No category"),
+        CATEGORIES.map(c => h("option", { key: c, value: c }, c))
+      ),
+      h("label", { className: "label" }, `Add Members ${selected.size ? `(${selected.size} selected)` : "(optional)"}`),
+      ungrouped.length === 0
+        ? h("p", { className: "hint", style: { marginBottom: 16 } }, "No ungrouped students available — you can assign members later from the group's Manage view.")
+        : h("div", { className: "card", style: { padding: 8, marginBottom: 16, maxHeight: 220, overflowY: "auto" } },
+            ungrouped.map(s => h("label", {
+              key: s.id,
+              style: { display: "flex", alignItems: "center", gap: 9, padding: "7px 9px", borderRadius: 7, cursor: "pointer", fontSize: 13 }
+            },
+              h("input", { type: "checkbox", checked: selected.has(s.id), onChange: () => toggle(s.id) }),
+              h("span", null, s.full_name || s.email),
+              h("span", { style: { color: "var(--muted)" } }, "  · " + s.email)
+            ))
+          ),
+      error && h("div", { style: { color: "var(--rejected-strong)", background: "var(--rejected-soft)", borderRadius: 9, padding: "9px 12px", fontSize: 13, marginBottom: 14 } }, error),
+      h("div", { style: { display: "flex", gap: 8, justifyContent: "flex-end" } },
+        h("button", { className: "btn btn-ghost", onClick: onClose }, "Cancel"),
+        h("button", { className: "btn btn-primary", onClick: create, disabled: saving }, saving ? h("span", { className: "spinner" }) : "Create Group")
+      )
     )
   );
 }
@@ -1437,7 +1507,7 @@ function TeacherDashboard({ profile }) {
       loading ? h("div", { className: "empty-state" }, h("span", { className: "spinner" })) :
         tab === "overview" ? h(TeacherOverviewTab, { subs, onRefresh: load }) :
         tab === "stats" ? h(TeacherStatsTab, { subs }) :
-        tab === "teams" ? h(TeacherTeamsTab, { subs }) :
+        tab === "teams" ? h(TeacherTeamsTab, { subs, profile }) :
         h(AdminTab, { profile })
     )
   );
