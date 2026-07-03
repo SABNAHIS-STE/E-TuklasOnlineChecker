@@ -1534,6 +1534,7 @@ function App() {
   const [session, setSession] = useState(undefined);
   const [profile, setProfile] = useState(null);
   const [theme, setTheme] = useState(localStorage.getItem("etuklas-oc-theme") || "dark");
+  const notifState = useNotifications(profile);
 
   useEffect(() => { document.documentElement.setAttribute("data-theme", theme); localStorage.setItem("etuklas-oc-theme", theme); }, [theme]);
 
@@ -1583,7 +1584,6 @@ function App() {
 
   const isTeacher = profile.role === "teacher" || profile.role === "admin";
   const needsSetup = profile.role === "student" && !profile.category;
-  const notifState = useNotifications(profile);
 
   return h("div", { className: "app" },
     h(ToastStack, { notifState }),
