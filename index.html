@@ -1481,6 +1481,34 @@ function AdminTab({ profile }) {
   );
 }
 
+function TeacherCheckerTab({ profile }) {
+  const [subs, setSubs] = useState({});
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    const { data } = await sb.from("submissions").select("*").eq("uploader_id", profile.id).is("group_id", null);
+    const map = {};
+    (data || []).forEach(s => { if (SECTIONS.some(sec => sec.id === s.section_id)) map[s.section_id] = s; });
+    setSubs(map);
+    setLoading(false);
+  }, [profile.id]);
+
+  useEffect(() => { load(); }, [load]);
+
+  return h("div", null,
+    h("div", { className: "card fade-up", style: { marginBottom: 18 } },
+      h("h3", { style: { fontSize: 16, marginBottom: 6 } }, "Try the AI Checker"),
+      h("p", { className: "hint" },
+        "Upload a draft Abstract, Rationale, or Methodology to see the same rubric-based feedback your students get. These test uploads are tied to your own account and never appear in the student review queue, stats, or teams tabs.")
+    ),
+    loading ? h("div", { className: "empty-state" }, h("span", { className: "spinner" })) :
+      SECTIONS.map(s => h(SectionUploadCard, {
+        key: s.id, profile, sectionDef: s, submission: subs[s.id],
+        onUpdated: (id, updated) => setSubs(prev => ({ ...prev, [id]: updated }))
+      }))
+  );
+}
+
 function TeacherDashboard({ profile }) {
   const [tab, setTab] = useState("overview");
   const [subs, setSubs] = useState([]);
@@ -1488,7 +1516,7 @@ function TeacherDashboard({ profile }) {
 
   const load = useCallback(async () => {
     let { data, error } = await sb.from("submissions")
-      .select("*, profiles(full_name, email)")
+      .select("*, profiles(full_name, email, role)")
       .order("submitted_at", { ascending: false });
 
     if (error) {
@@ -1510,7 +1538,7 @@ function TeacherDashboard({ profile }) {
       const uploaderIds = [...new Set((subsOnly || []).map(s => s.uploader_id).filter(Boolean))];
       let profilesById = {};
       if (uploaderIds.length) {
-        const { data: profs } = await sb.from("profiles").select("id, full_name, email").in("id", uploaderIds);
+        const { data: profs } = await sb.from("profiles").select("id, full_name, email, role").in("id", uploaderIds);
         profilesById = Object.fromEntries((profs || []).map(p => [p.id, p]));
       }
       data = (subsOnly || []).map(s => ({ ...s, profiles: profilesById[s.uploader_id] || null }));
@@ -1521,14 +1549,21 @@ function TeacherDashboard({ profile }) {
   }, []);
   useEffect(() => { load(); }, [load]);
 
+  // Teachers/admins can use the same checker students use (see the
+  // "Self-Check" tab below). Those test uploads share the "submissions"
+  // table but should never show up as student work to review/grade.
+  const studentSubs = useMemo(() => subs.filter(s => (s.profiles?.role || "student") === "student"), [subs]);
+
   const ICONS = {
     overview: h("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" }, h("path", { d: "M14 3v4a1 1 0 0 0 1 1h4" }), h("path", { d: "M5 3h9l5 5v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" }), h("path", { d: "M9 13h6M9 17h6" })),
     stats: h("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" }, h("path", { d: "M3 3v18h18" }), h("path", { d: "M18 17V9M13 17V5M8 17v-4" })),
     teams: h("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" }, h("circle", { cx: 9, cy: 8, r: 3 }), h("path", { d: "M2 20c0-3.3 3.1-6 7-6s7 2.7 7 6" }), h("path", { d: "M16 4.5a3 3 0 0 1 0 5.9" }), h("path", { d: "M22 20c0-2.7-2.2-5-5.2-5.8" })),
-    admin: h("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" }, h("path", { d: "M12 2 4 5v6c0 5 3.4 8.7 8 11 4.6-2.3 8-6 8-11V5l-8-3Z" }), h("path", { d: "m9 12 2 2 4-4" }))
+    admin: h("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" }, h("path", { d: "M12 2 4 5v6c0 5 3.4 8.7 8 11 4.6-2.3 8-6 8-11V5l-8-3Z" }), h("path", { d: "m9 12 2 2 4-4" })),
+    checker: h("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" }, h("path", { d: "M9 11.5 11 13.5 15.5 9" }), h("path", { d: "M12 2 4 5v6c0 5 3.4 8.7 8 11 4.6-2.3 8-6 8-11V5l-8-3Z" }))
   };
   const tabs = [
     { id: "overview", label: "Submissions" },
+    { id: "checker", label: "Self-Check" },
     { id: "stats", label: "Stats" },
     { id: "teams", label: "Teams" },
     ...(profile.role === "admin" ? [{ id: "admin", label: "Admin" }] : [])
@@ -1546,9 +1581,10 @@ function TeacherDashboard({ profile }) {
       h("h2", { style: { fontSize: 21, marginBottom: 18 } },
         tabs.find(t => t.id === tab)?.label),
       loading ? h("div", { className: "empty-state" }, h("span", { className: "spinner" })) :
-        tab === "overview" ? h(TeacherOverviewTab, { subs, onRefresh: load }) :
-        tab === "stats" ? h(TeacherStatsTab, { subs }) :
-        tab === "teams" ? h(TeacherTeamsTab, { subs, profile }) :
+        tab === "overview" ? h(TeacherOverviewTab, { subs: studentSubs, onRefresh: load }) :
+        tab === "checker" ? h(TeacherCheckerTab, { profile }) :
+        tab === "stats" ? h(TeacherStatsTab, { subs: studentSubs }) :
+        tab === "teams" ? h(TeacherTeamsTab, { subs: studentSubs, profile }) :
         h(AdminTab, { profile })
     )
   );
