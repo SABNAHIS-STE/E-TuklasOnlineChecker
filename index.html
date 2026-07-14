@@ -296,7 +296,17 @@ const { useState, useEffect, useMemo, useCallback, useRef } = React;
 const SECTIONS = [
   { id: "abstract", label: "Abstract" },
   { id: "rationale", label: "Rationale / Background of the Study" },
-  { id: "methodology", label: "Methodology" }
+  { id: "methodology", label: "Methodology" },
+  { id: "research_questions", label: "Research Questions (SMART)" },
+  { id: "research_objectives", label: "Research Objectives" },
+  { id: "hypotheses", label: "Hypotheses" },
+  { id: "theoretical_framework", label: "Theoretical Framework" },
+  { id: "conceptual_framework", label: "Conceptual Framework" },
+  { id: "scope_limitations", label: "Scope and Limitations" },
+  { id: "significance", label: "Significance of the Study" },
+  { id: "definition_of_terms", label: "Definition of Terms" },
+  { id: "statistical_analysis", label: "Statistical Analysis" },
+  { id: "bibliography", label: "Bibliography" }
 ];
 const CATEGORIES = [
   "Life Science",
@@ -766,7 +776,7 @@ async function extractText(file) {
 /* ════════════════════════════════════════════════════
    STUDENT DASHBOARD
    ════════════════════════════════════════════════════ */
-function SectionUploadCard({ profile, sectionDef, submission, onUpdated }) {
+function SectionUploadCard({ profile, sectionDef, submission, onUpdated, studyId, category }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const fileRef = useRef();
@@ -781,15 +791,18 @@ function SectionUploadCard({ profile, sectionDef, submission, onUpdated }) {
       if (text.trim().length < 20) throw new Error("Extracted text looks too short — check the file.");
 
       const lookup = sb.from("submissions").select("id").eq("section_id", sectionDef.id);
-      const { data: existing } = profile.group_id
-        ? await lookup.eq("group_id", profile.group_id).maybeSingle()
-        : await lookup.eq("uploader_id", profile.id).maybeSingle();
+      const { data: existing } = studyId
+        ? await lookup.eq("checker_study_id", studyId).maybeSingle()
+        : profile.group_id
+          ? await lookup.eq("group_id", profile.group_id).maybeSingle()
+          : await lookup.eq("uploader_id", profile.id).maybeSingle();
 
       let submissionId = existing?.id;
       if (!submissionId) {
         const { data: created, error: insErr } = await sb.from("submissions").insert({
-          uploader_id: profile.id, section_id: sectionDef.id, category: profile.category,
-          group_id: profile.group_id || null,
+          uploader_id: profile.id, section_id: sectionDef.id, category: category || profile.category,
+          group_id: studyId ? null : (profile.group_id || null),
+          checker_study_id: studyId || null,
           team_emails: (profile.co_authors || []).map(c => c.email),
           file_name: file.name, extracted_text: text
         }).select("id").single();
@@ -798,7 +811,7 @@ function SectionUploadCard({ profile, sectionDef, submission, onUpdated }) {
       } else {
         await sb.from("submissions").update({
           file_name: file.name, extracted_text: text, uploader_id: profile.id,
-          category: profile.category, team_emails: (profile.co_authors || []).map(c => c.email)
+          category: category || profile.category, team_emails: (profile.co_authors || []).map(c => c.email)
         }).eq("id", submissionId);
       }
 
@@ -1481,31 +1494,180 @@ function AdminTab({ profile }) {
   );
 }
 
-function TeacherCheckerTab({ profile }) {
+// One card per study in the teacher's list — title, category, part-completion
+// progress at a glance, and a delete affordance.
+function StudyCard({ study, subCount, onOpen, onDelete }) {
+  const [busy, setBusy] = useState(false);
+  return h("div", { className: "card card-hover fade-up", style: { marginBottom: 12, cursor: "pointer" }, onClick: onOpen },
+    h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 } },
+      h("div", { style: { flex: 1, minWidth: 0 } },
+        h("div", { style: { fontWeight: 600, fontSize: 15 } }, study.title),
+        h("div", { style: { fontSize: 12.5, color: "var(--muted)", marginTop: 3 } },
+          (study.category || "No category") + " · " + new Date(study.created_at).toLocaleDateString())
+      ),
+      h("div", { style: { display: "flex", alignItems: "center", gap: 10, flexShrink: 0 } },
+        h("span", { className: "badge-purple" }, `${subCount}/${SECTIONS.length} parts`),
+        h("button", {
+          className: "btn btn-outline btn-sm",
+          disabled: busy,
+          onClick: async (e) => { e.stopPropagation(); setBusy(true); await onDelete(study.id); }
+        }, busy ? h("span", { className: "spinner" }) : "Delete")
+      )
+    )
+  );
+}
+
+// New-study form: a title (required) and an optional category, matching the
+// student-side CATEGORIES list so grading context lines up.
+function NewStudyForm({ onCreate, onCancel }) {
+  const [title, setTitle] = useState("");
+  const [category, setCategory] = useState(CATEGORIES[0]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!title.trim()) return;
+    setBusy(true); setError("");
+    try {
+      await onCreate(title.trim(), category);
+    } catch (e) {
+      setError(e.message);
+      setBusy(false);
+    }
+  }
+
+  return h("form", { className: "card fade-up", style: { marginBottom: 18 }, onSubmit: submit },
+    h("h3", { style: { fontSize: 16, marginBottom: 6 } }, "New Study"),
+    h("p", { className: "hint", style: { marginBottom: 14 } },
+      "Give this study a title, then upload each part below. Once you're done, come back here to start a new study."),
+    h("input", {
+      className: "input", value: title, onChange: e => setTitle(e.target.value),
+      required: true, placeholder: "e.g. Effect of Light Color on Plant Growth", style: { marginBottom: 10 }
+    }),
+    h("select", { className: "select", value: category, onChange: e => setCategory(e.target.value), style: { marginBottom: 14 } },
+      CATEGORIES.map(c => h("option", { key: c, value: c }, c))
+    ),
+    error && h("div", { style: { color: "var(--rejected-strong)", background: "var(--rejected-soft)", borderRadius: 9, padding: "8px 12px", fontSize: 13, marginBottom: 12 } }, error),
+    h("div", { style: { display: "flex", gap: 10 } },
+      h("button", { className: "btn btn-primary", type: "submit", disabled: busy }, busy ? h("span", { className: "spinner" }) : "Create Study"),
+      onCancel && h("button", { className: "btn btn-outline", type: "button", onClick: onCancel }, "Cancel")
+    )
+  );
+}
+
+// Detail view for one study — upload/re-upload each of the 13 parts, all
+// scoped to this study's id so they're graded and stored independently of
+// any other study the teacher has made.
+function StudyDetail({ profile, study, onBack }) {
   const [subs, setSubs] = useState({});
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    const { data } = await sb.from("submissions").select("*").eq("uploader_id", profile.id).is("group_id", null);
+    const { data } = await sb.from("submissions").select("*").eq("checker_study_id", study.id);
     const map = {};
-    (data || []).forEach(s => { if (SECTIONS.some(sec => sec.id === s.section_id)) map[s.section_id] = s; });
+    (data || []).forEach(s => map[s.section_id] = s);
     setSubs(map);
+    setLoading(false);
+  }, [study.id]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const doneCount = SECTIONS.filter(s => subs[s.id]?.ai_status === "approved").length;
+  const pct = Math.round((doneCount / SECTIONS.length) * 100);
+
+  return h("div", null,
+    h("div", { className: "card fade-up", style: { marginBottom: 18 } },
+      h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 14, flexWrap: "wrap" } },
+        h("div", null,
+          h("button", { className: "btn btn-outline btn-sm", onClick: onBack, style: { marginBottom: 10 } }, "← All Studies"),
+          h("h2", { style: { fontSize: 20, marginBottom: 4 } }, study.title),
+          h("span", { className: "badge-purple" }, study.category || "No category")
+        ),
+        h("div", { style: { textAlign: "right" } },
+          h("div", { style: { fontFamily: "var(--font-mono)", fontSize: 20, fontWeight: 600, color: "var(--ink)" } }, `${doneCount}/${SECTIONS.length}`),
+          h("div", { style: { fontSize: 11.5, color: "var(--muted)", fontWeight: 600, letterSpacing: ".02em" } }, "PARTS APPROVED")
+        )
+      ),
+      h("div", { className: "progress-track", style: { marginTop: 16 } },
+        h("div", { className: "progress-fill", style: { width: pct + "%" } }))
+    ),
+    loading ? h("div", { className: "empty-state" }, h("span", { className: "spinner" })) :
+      SECTIONS.map(s => h(SectionUploadCard, {
+        key: s.id, profile, sectionDef: s, submission: subs[s.id], studyId: study.id, category: study.category,
+        onUpdated: (id, updated) => setSubs(prev => ({ ...prev, [id]: updated }))
+      }))
+  );
+}
+
+// Top-level "Studies" tab: list existing studies, create a new one, or drill
+// into one to upload/grade its parts. Entirely scoped to the logged-in
+// teacher/admin's own account — never mixed into student review data.
+function TeacherCheckerTab({ profile }) {
+  const [studies, setStudies] = useState([]);
+  const [subCounts, setSubCounts] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [showNewForm, setShowNewForm] = useState(false);
+  const [activeStudyId, setActiveStudyId] = useState(null);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data: studyRows, error: sErr } = await sb.from("checker_studies")
+      .select("*").eq("teacher_id", profile.id).order("created_at", { ascending: false });
+    if (sErr) { setError(sErr.message); setLoading(false); return; }
+    setStudies(studyRows || []);
+
+    if ((studyRows || []).length) {
+      const { data: subRows } = await sb.from("submissions")
+        .select("checker_study_id").in("checker_study_id", studyRows.map(s => s.id));
+      const counts = {};
+      (subRows || []).forEach(r => { counts[r.checker_study_id] = (counts[r.checker_study_id] || 0) + 1; });
+      setSubCounts(counts);
+    }
     setLoading(false);
   }, [profile.id]);
 
   useEffect(() => { load(); }, [load]);
 
+  async function createStudy(title, category) {
+    const { data, error: insErr } = await sb.from("checker_studies")
+      .insert({ teacher_id: profile.id, title, category }).select("*").single();
+    if (insErr) throw insErr;
+    setStudies(prev => [data, ...prev]);
+    setShowNewForm(false);
+    setActiveStudyId(data.id);
+  }
+
+  async function deleteStudy(id) {
+    await sb.from("checker_studies").delete().eq("id", id);
+    setStudies(prev => prev.filter(s => s.id !== id));
+    if (activeStudyId === id) setActiveStudyId(null);
+  }
+
+  const activeStudy = studies.find(s => s.id === activeStudyId);
+  if (activeStudy) {
+    return h(StudyDetail, { profile, study: activeStudy, onBack: () => { setActiveStudyId(null); load(); } });
+  }
+
   return h("div", null,
     h("div", { className: "card fade-up", style: { marginBottom: 18 } },
-      h("h3", { style: { fontSize: 16, marginBottom: 6 } }, "Try the AI Checker"),
+      h("h3", { style: { fontSize: 16, marginBottom: 6 } }, "Studies"),
       h("p", { className: "hint" },
-        "Upload a draft Abstract, Rationale, or Methodology to see the same rubric-based feedback your students get. These test uploads are tied to your own account and never appear in the student review queue, stats, or teams tabs.")
+        "Create a titled study, upload each part (Abstract, Research Questions, Bibliography, etc.), and get the same rubric-based AI feedback students get. Studies are private to your account — start a new one any time.")
     ),
+    error && h("div", { style: { color: "var(--rejected-strong)", background: "var(--rejected-soft)", borderRadius: 9, padding: "8px 12px", fontSize: 13, marginBottom: 14 } }, error),
+    showNewForm
+      ? h(NewStudyForm, { onCreate: createStudy, onCancel: studies.length ? () => setShowNewForm(false) : null })
+      : h("button", { className: "btn btn-primary", style: { marginBottom: 18 }, onClick: () => setShowNewForm(true) }, "+ New Study"),
     loading ? h("div", { className: "empty-state" }, h("span", { className: "spinner" })) :
-      SECTIONS.map(s => h(SectionUploadCard, {
-        key: s.id, profile, sectionDef: s, submission: subs[s.id],
-        onUpdated: (id, updated) => setSubs(prev => ({ ...prev, [id]: updated }))
-      }))
+      studies.length === 0 && !showNewForm
+        ? h("div", { className: "empty-state" }, "No studies yet — create one to try the AI checker.")
+        : studies.map(s => h(StudyCard, {
+            key: s.id, study: s, subCount: subCounts[s.id] || 0,
+            onOpen: () => setActiveStudyId(s.id),
+            onDelete: deleteStudy
+          }))
   );
 }
 
@@ -1550,7 +1712,7 @@ function TeacherDashboard({ profile }) {
   useEffect(() => { load(); }, [load]);
 
   // Teachers/admins can use the same checker students use (see the
-  // "Self-Check" tab below). Those test uploads share the "submissions"
+  // "Studies" tab below). Those test uploads share the "submissions"
   // table but should never show up as student work to review/grade.
   const studentSubs = useMemo(() => subs.filter(s => (s.profiles?.role || "student") === "student"), [subs]);
 
@@ -1563,7 +1725,7 @@ function TeacherDashboard({ profile }) {
   };
   const tabs = [
     { id: "overview", label: "Submissions" },
-    { id: "checker", label: "Self-Check" },
+    { id: "checker", label: "Studies" },
     { id: "stats", label: "Stats" },
     { id: "teams", label: "Teams" },
     ...(profile.role === "admin" ? [{ id: "admin", label: "Admin" }] : [])
