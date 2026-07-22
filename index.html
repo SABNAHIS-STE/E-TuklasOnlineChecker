@@ -990,11 +990,28 @@ function TeacherOverviewTab({ subs, onRefresh }) {
     setSelected(next);
   }
 
+  function toggleAll() {
+    if (selected.size === filtered.length) setSelected(new Set());
+    else setSelected(new Set(filtered.map(s => s.id)));
+  }
+
   async function bulkDelete() {
     if (!selected.size || !confirm(`Delete ${selected.size} submission(s)? This cannot be undone.`)) return;
     setBusy(true);
     await authedFetch("/api/admin/bulk-delete", { method: "POST", body: JSON.stringify({ ids: [...selected] }) });
     setSelected(new Set());
+    setBusy(false);
+    onRefresh();
+  }
+
+  async function bulkDetectAi() {
+    if (!selected.size) return;
+    setBusy(true);
+    try {
+      await authedFetch("/api/admin/detect-ai", { method: "POST", body: JSON.stringify({ ids: [...selected] }) });
+    } catch (e) {
+      alert("AI detector run failed: " + e.message);
+    }
     setBusy(false);
     onRefresh();
   }
@@ -1033,6 +1050,7 @@ function TeacherOverviewTab({ subs, onRefresh }) {
         Object.entries(STATUS_META).filter(([k]) => k !== "error").map(([k, v]) => h("option", { key: k, value: k }, v.label))),
       h("input", { className: "input", style: { width: 230 }, placeholder: "Search student or co-author…", value: search, onChange: e => setSearch(e.target.value) }),
       h("div", { style: { flex: 1 } }),
+      selected.size > 0 && h("button", { className: "btn btn-outline btn-sm", onClick: bulkDetectAi, disabled: busy, title: "Run the AI-writing signal on already-uploaded submissions" }, busy ? h("span", { className: "spinner" }) : `Run AI detector (${selected.size})`),
       selected.size > 0 && h("button", { className: "btn btn-danger btn-sm", onClick: bulkDelete, disabled: busy }, `Delete ${selected.size} selected`),
       h("button", { className: "btn btn-outline btn-sm", onClick: exportCsv }, "Export CSV")
     ),
@@ -1040,7 +1058,7 @@ function TeacherOverviewTab({ subs, onRefresh }) {
       h("div", { className: "table-wrap" },
         h("table", null,
           h("thead", null, h("tr", null,
-            h("th", { style: { width: 36 } }), h("th", null, "Student"), h("th", null, "Section"), h("th", null, "Category"),
+            h("th", { style: { width: 36 } }, filtered.length > 0 && h("input", { type: "checkbox", checked: selected.size === filtered.length, onChange: toggleAll, title: "Select all" })), h("th", null, "Student"), h("th", null, "Section"), h("th", null, "Category"),
             h("th", null, "Score"), h("th", null, "Status"), h("th", null, "AI Signal"), h("th", null, "Provider")
           )),
           h("tbody", null,
@@ -1072,6 +1090,24 @@ function SubmissionDetailModal({ submission, onClose, onSaved }) {
   const [score, setScore] = useState(submission.teacher_verdict?.score ?? submission.ai_score ?? 0);
   const [note, setNote] = useState(submission.teacher_verdict?.note || "");
   const [saving, setSaving] = useState(false);
+  const [flag, setFlag] = useState({ likelihood: submission.ai_flag_likelihood, reason: submission.ai_flag_reason });
+  const [checkingAi, setCheckingAi] = useState(false);
+  const [aiCheckError, setAiCheckError] = useState("");
+
+  async function checkAi() {
+    setCheckingAi(true); setAiCheckError("");
+    try {
+      const res = await authedFetch("/api/admin/detect-ai", { method: "POST", body: JSON.stringify({ ids: [submission.id] }) });
+      const { results } = await res.json();
+      const r = results?.[submission.id];
+      if (r?.aiFlag) setFlag({ likelihood: r.aiFlag.likelihood, reason: r.aiFlag.reason });
+      else if (r?.skipped) setAiCheckError(r.skipped);
+      else if (r?.error) setAiCheckError(r.error);
+    } catch (e) {
+      setAiCheckError(e.message);
+    }
+    setCheckingAi(false);
+  }
 
   async function save() {
     setSaving(true);
@@ -1104,11 +1140,16 @@ function SubmissionDetailModal({ submission, onClose, onSaved }) {
         submission.ai_criteria.map((c, i) => h("div", { className: "rubric-item", key: i },
           h("span", null, c.name), h("span", { className: "rubric-score" }, c.score + "/" + c.max)))),
       submission.ai_remarks && h("p", { style: { fontSize: 13, lineHeight: 1.6, color: "var(--text-2)", marginTop: submission.ai_criteria ? 4 : 0 } }, submission.ai_remarks),
-      submission.ai_flag_likelihood && h("div", { style: { fontSize: 12.5, marginTop: 12, padding: "10px 13px", borderRadius: 10, background: "var(--surface-3)", lineHeight: 1.5 } },
-        h("div", { style: { marginBottom: 4 } }, h(AiFlagBadge, { likelihood: submission.ai_flag_likelihood, reason: submission.ai_flag_reason })),
-        submission.ai_flag_reason && h("div", { style: { color: "var(--text-2)" } }, submission.ai_flag_reason),
+      flag.likelihood && h("div", { style: { fontSize: 12.5, marginTop: 12, padding: "10px 13px", borderRadius: 10, background: "var(--surface-3)", lineHeight: 1.5 } },
+        h("div", { style: { marginBottom: 4 } }, h(AiFlagBadge, { likelihood: flag.likelihood, reason: flag.reason })),
+        flag.reason && h("div", { style: { color: "var(--text-2)" } }, flag.reason),
         h("div", { style: { color: "var(--muted)", marginTop: 6, fontStyle: "italic" } },
           "Automated stylistic estimate from one language model — not a plagiarism or AI-detection verdict, not evidence, and not a substitute for your own judgment. For your awareness only.")
+      ),
+      h("div", { className: "no-print", style: { marginTop: flag.likelihood ? 8 : 12 } },
+        h("button", { className: "btn btn-outline btn-sm", onClick: checkAi, disabled: checkingAi },
+          checkingAi ? h("span", { className: "spinner" }) : (flag.likelihood ? "Re-check AI signal" : "Check AI signal")),
+        aiCheckError && h("div", { style: { color: "var(--rejected-strong)", fontSize: 12, marginTop: 6 } }, aiCheckError)
       ),
       h("hr", { style: { border: "none", borderTop: "1px solid var(--border)", margin: "18px 0" } }),
       h("label", { className: "label" }, "Teacher Override Score"),
