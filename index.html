@@ -322,6 +322,14 @@ const STATUS_META = {
   rejected:      { label: "Rejected",       cls: "pill-rejected" },
   error:         { label: "Error",          cls: "pill-rejected" }
 };
+// Teacher-facing only. This is one LLM's stylistic guess about possible AI
+// writing — NOT a ZeroGPT/Turnitin/QuillBot result, NOT proof, and NEVER
+// used anywhere to change ai_status/ai_score or a student's grade.
+const AI_FLAG_META = {
+  low:    { label: "Low",    cls: "pill-approved" },
+  medium: { label: "Medium", cls: "pill-revision" },
+  high:   { label: "High",   cls: "pill-rejected" }
+};
 
 /* ════════════════════════════════════════════════════
    NOTIFICATIONS — realtime toasts + persisted bell panel
@@ -520,6 +528,18 @@ function GradeRing({ score, status, size = 56 }) {
 function StatusPill({ status }) {
   const meta = STATUS_META[status] || { label: "Not Started", cls: "pill-neutral" };
   return h("span", { className: "pill " + meta.cls }, meta.label);
+}
+
+// Teacher-facing only — never render this in student-facing views.
+// Deliberately unlabeled with any third-party product name: it's one LLM's
+// stylistic guess, not a real detector result, and must never look like one.
+function AiFlagBadge({ likelihood, reason }) {
+  if (!likelihood || !AI_FLAG_META[likelihood]) return null;
+  const meta = AI_FLAG_META[likelihood];
+  return h("span", {
+    className: "pill " + meta.cls,
+    title: (reason ? reason + " — " : "") + "Automated stylistic estimate only, not a plagiarism/AI-detection verdict. Not evidence — for teacher awareness only."
+  }, "AI-writing signal: " + meta.label);
 }
 
 /* ════════════════════════════════════════════════════
@@ -820,6 +840,10 @@ function SectionUploadCard({ profile, sectionDef, submission, onUpdated, studyId
         body: JSON.stringify({ submissionId, sectionId: sectionDef.id, text })
       });
       const { verdict } = await res.json();
+      // Note: the response also includes `aiFlag` (the AI-writing-likelihood
+      // signal), deliberately NOT read or stored here — that field is
+      // teacher-facing only (see TeacherDashboard) and must never surface in
+      // the student view as an accusation.
       onUpdated(sectionDef.id, { ...submission, id: submissionId, file_name: file.name, ai_status: verdict.status, ai_score: verdict.scorePercent, ai_criteria: verdict.criteria, ai_remarks: verdict.remarks, ai_provider: verdict.provider });
     } catch (e) {
       setError(e.message);
@@ -857,7 +881,9 @@ function SectionUploadCard({ profile, sectionDef, submission, onUpdated, studyId
     submission?.ai_remarks && h("div", { style: { fontSize: 13, marginTop: 8, lineHeight: 1.5 } },
       h("strong", null, "Remarks: "), submission.ai_remarks),
     submission?.teacher_verdict && h("div", { style: { fontSize: 13, marginTop: 10, padding: "10px 13px", borderRadius: 10, background: "var(--accent-soft)", color: "var(--accent)", borderLeft: "3px solid var(--accent)", lineHeight: 1.5 } },
-      h("strong", null, "Teacher override: "), submission.teacher_verdict.score + "/100 — " + (submission.teacher_verdict.note || ""))
+      h("strong", null, "Teacher override: "), submission.teacher_verdict.score + "/100 — " + (submission.teacher_verdict.note || "")),
+    !submission && h("div", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 10, lineHeight: 1.4 } },
+      "This platform uses an AI tool to estimate whether writing may be AI-generated. It's an automated estimate, not proof — your teacher reviews it before it affects anything.")
   );
 }
 
@@ -1015,10 +1041,10 @@ function TeacherOverviewTab({ subs, onRefresh }) {
         h("table", null,
           h("thead", null, h("tr", null,
             h("th", { style: { width: 36 } }), h("th", null, "Student"), h("th", null, "Section"), h("th", null, "Category"),
-            h("th", null, "Score"), h("th", null, "Status"), h("th", null, "Provider")
+            h("th", null, "Score"), h("th", null, "Status"), h("th", null, "AI Signal"), h("th", null, "Provider")
           )),
           h("tbody", null,
-            filtered.length === 0 ? h("tr", null, h("td", { colSpan: 7 },
+            filtered.length === 0 ? h("tr", null, h("td", { colSpan: 8 },
               h("div", { className: "empty-state" },
                 h("svg", { className: "empty-icon", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round" }, h("path", { d: "M9 12h6M9 16h6M9 8h6" }), h("rect", { x: 4, y: 3, width: 16, height: 18, rx: 2 })),
                 "No submissions match these filters."))) :
@@ -1031,6 +1057,7 @@ function TeacherOverviewTab({ subs, onRefresh }) {
               h("td", { "data-label": "Category" }, h("span", { className: "badge-purple" }, s.category || "—")),
               h("td", { "data-label": "Score" }, s.ai_score != null ? h("span", { style: { fontFamily: "var(--font-mono)", fontWeight: 600, color: "var(--text)" } }, s.ai_score) : "—"),
               h("td", { "data-label": "Status" }, h(StatusPill, { status: s.ai_status })),
+              h("td", { "data-label": "AI Signal" }, s.ai_flag_likelihood ? h(AiFlagBadge, { likelihood: s.ai_flag_likelihood, reason: s.ai_flag_reason }) : "—"),
               h("td", { "data-label": "Provider" }, s.ai_provider || "—")
             ))
           )
@@ -1077,6 +1104,12 @@ function SubmissionDetailModal({ submission, onClose, onSaved }) {
         submission.ai_criteria.map((c, i) => h("div", { className: "rubric-item", key: i },
           h("span", null, c.name), h("span", { className: "rubric-score" }, c.score + "/" + c.max)))),
       submission.ai_remarks && h("p", { style: { fontSize: 13, lineHeight: 1.6, color: "var(--text-2)", marginTop: submission.ai_criteria ? 4 : 0 } }, submission.ai_remarks),
+      submission.ai_flag_likelihood && h("div", { style: { fontSize: 12.5, marginTop: 12, padding: "10px 13px", borderRadius: 10, background: "var(--surface-3)", lineHeight: 1.5 } },
+        h("div", { style: { marginBottom: 4 } }, h(AiFlagBadge, { likelihood: submission.ai_flag_likelihood, reason: submission.ai_flag_reason })),
+        submission.ai_flag_reason && h("div", { style: { color: "var(--text-2)" } }, submission.ai_flag_reason),
+        h("div", { style: { color: "var(--muted)", marginTop: 6, fontStyle: "italic" } },
+          "Automated stylistic estimate from one language model — not a plagiarism or AI-detection verdict, not evidence, and not a substitute for your own judgment. For your awareness only.")
+      ),
       h("hr", { style: { border: "none", borderTop: "1px solid var(--border)", margin: "18px 0" } }),
       h("label", { className: "label" }, "Teacher Override Score"),
       h("input", { className: "input", type: "number", min: 0, max: 100, value: score, onChange: e => setScore(e.target.value), style: { marginBottom: 14 } }),
