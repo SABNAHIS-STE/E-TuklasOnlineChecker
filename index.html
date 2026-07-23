@@ -800,6 +800,30 @@ function SectionUploadCard({ profile, sectionDef, submission, onUpdated, studyId
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const fileRef = useRef();
+  const isTeacherStudy = !!studyId; // Studies feature — teacher's own test uploads, never the student view
+  const [flag, setFlag] = useState({ likelihood: submission?.ai_flag_likelihood, reason: submission?.ai_flag_reason });
+  const [checkingAi, setCheckingAi] = useState(false);
+  const [aiCheckError, setAiCheckError] = useState("");
+
+  useEffect(() => {
+    setFlag({ likelihood: submission?.ai_flag_likelihood, reason: submission?.ai_flag_reason });
+  }, [submission?.ai_flag_likelihood, submission?.ai_flag_reason]);
+
+  async function checkAi() {
+    if (!submission?.id) return;
+    setCheckingAi(true); setAiCheckError("");
+    try {
+      const res = await authedFetch("/api/admin/detect-ai", { method: "POST", body: JSON.stringify({ ids: [submission.id] }) });
+      const { results } = await res.json();
+      const r = results?.[submission.id];
+      if (r?.aiFlag) setFlag({ likelihood: r.aiFlag.likelihood, reason: r.aiFlag.reason });
+      else if (r?.skipped) setAiCheckError(r.skipped);
+      else if (r?.error) setAiCheckError(r.error);
+    } catch (e) {
+      setAiCheckError(e.message);
+    }
+    setCheckingAi(false);
+  }
 
   async function handleFile(e) {
     const file = e.target.files[0];
@@ -839,12 +863,11 @@ function SectionUploadCard({ profile, sectionDef, submission, onUpdated, studyId
         method: "POST",
         body: JSON.stringify({ submissionId, sectionId: sectionDef.id, text })
       });
-      const { verdict } = await res.json();
-      // Note: the response also includes `aiFlag` (the AI-writing-likelihood
-      // signal), deliberately NOT read or stored here — that field is
-      // teacher-facing only (see TeacherDashboard) and must never surface in
-      // the student view as an accusation.
-      onUpdated(sectionDef.id, { ...submission, id: submissionId, file_name: file.name, ai_status: verdict.status, ai_score: verdict.scorePercent, ai_criteria: verdict.criteria, ai_remarks: verdict.remarks, ai_provider: verdict.provider });
+      const { verdict, aiFlag } = await res.json();
+      // aiFlag is deliberately ignored for the student view — see
+      // isTeacherStudy below, which gates whether it's ever shown.
+      if (isTeacherStudy && aiFlag) setFlag({ likelihood: aiFlag.likelihood, reason: aiFlag.reason });
+      onUpdated(sectionDef.id, { ...submission, id: submissionId, file_name: file.name, ai_status: verdict.status, ai_score: verdict.scorePercent, ai_criteria: verdict.criteria, ai_remarks: verdict.remarks, ai_provider: verdict.provider, ai_flag_likelihood: aiFlag?.likelihood, ai_flag_reason: aiFlag?.reason });
     } catch (e) {
       setError(e.message);
     }
@@ -882,6 +905,17 @@ function SectionUploadCard({ profile, sectionDef, submission, onUpdated, studyId
       h("strong", null, "Remarks: "), submission.ai_remarks),
     submission?.teacher_verdict && h("div", { style: { fontSize: 13, marginTop: 10, padding: "10px 13px", borderRadius: 10, background: "var(--accent-soft)", color: "var(--accent)", borderLeft: "3px solid var(--accent)", lineHeight: 1.5 } },
       h("strong", null, "Teacher override: "), submission.teacher_verdict.score + "/100 — " + (submission.teacher_verdict.note || "")),
+    isTeacherStudy && submission && h("div", { className: "no-print", style: { marginTop: 10 } },
+      flag.likelihood && h("div", { style: { fontSize: 12.5, marginBottom: 8, padding: "10px 13px", borderRadius: 10, background: "var(--surface-3)", lineHeight: 1.5 } },
+        h("div", { style: { marginBottom: 4 } }, h(AiFlagBadge, { likelihood: flag.likelihood, reason: flag.reason })),
+        flag.reason && h("div", { style: { color: "var(--text-2)" } }, flag.reason),
+        h("div", { style: { color: "var(--muted)", marginTop: 6, fontStyle: "italic" } },
+          "Automated stylistic estimate from one language model — not a plagiarism or AI-detection verdict, not evidence.")
+      ),
+      h("button", { className: "btn btn-outline btn-sm", onClick: checkAi, disabled: checkingAi },
+        checkingAi ? h("span", { className: "spinner" }) : (flag.likelihood ? "Re-check AI signal" : "Check AI signal")),
+      aiCheckError && h("div", { style: { color: "var(--rejected-strong)", fontSize: 12, marginTop: 6 } }, aiCheckError)
+    ),
     !submission && h("div", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 10, lineHeight: 1.4 } },
       "This platform uses an AI tool to estimate whether writing may be AI-generated. It's an automated estimate, not proof — your teacher reviews it before it affects anything.")
   );
