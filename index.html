@@ -533,13 +533,14 @@ function StatusPill({ status }) {
 // Teacher-facing only — never render this in student-facing views.
 // Deliberately unlabeled with any third-party product name: it's one LLM's
 // stylistic guess, not a real detector result, and must never look like one.
-function AiFlagBadge({ likelihood, reason }) {
+function AiFlagBadge({ likelihood, reason, percent }) {
   if (!likelihood || !AI_FLAG_META[likelihood]) return null;
   const meta = AI_FLAG_META[likelihood];
+  const pctText = Number.isFinite(percent) ? ` (~${percent}%)` : "";
   return h("span", {
     className: "pill " + meta.cls,
-    title: (reason ? reason + " — " : "") + "Automated stylistic estimate only, not a plagiarism/AI-detection verdict. Not evidence — for teacher awareness only."
-  }, "AI-writing signal: " + meta.label);
+    title: (reason ? reason + " — " : "") + "Rough, rounded self-estimate from one language model, not a plagiarism/AI-detection verdict or precise measurement. Not evidence — for teacher awareness only."
+  }, "AI-writing signal: " + meta.label + pctText);
 }
 
 /* ════════════════════════════════════════════════════
@@ -801,13 +802,13 @@ function SectionUploadCard({ profile, sectionDef, submission, onUpdated, studyId
   const [error, setError] = useState("");
   const fileRef = useRef();
   const isTeacherStudy = !!studyId; // Studies feature — teacher's own test uploads, never the student view
-  const [flag, setFlag] = useState({ likelihood: submission?.ai_flag_likelihood, reason: submission?.ai_flag_reason });
+  const [flag, setFlag] = useState({ likelihood: submission?.ai_flag_likelihood, reason: submission?.ai_flag_reason, percent: submission?.ai_flag_percent });
   const [checkingAi, setCheckingAi] = useState(false);
   const [aiCheckError, setAiCheckError] = useState("");
 
   useEffect(() => {
-    setFlag({ likelihood: submission?.ai_flag_likelihood, reason: submission?.ai_flag_reason });
-  }, [submission?.ai_flag_likelihood, submission?.ai_flag_reason]);
+    setFlag({ likelihood: submission?.ai_flag_likelihood, reason: submission?.ai_flag_reason, percent: submission?.ai_flag_percent });
+  }, [submission?.ai_flag_likelihood, submission?.ai_flag_reason, submission?.ai_flag_percent]);
 
   async function checkAi() {
     if (!submission?.id) return;
@@ -816,7 +817,7 @@ function SectionUploadCard({ profile, sectionDef, submission, onUpdated, studyId
       const res = await authedFetch("/api/admin/detect-ai", { method: "POST", body: JSON.stringify({ ids: [submission.id] }) });
       const { results } = await res.json();
       const r = results?.[submission.id];
-      if (r?.aiFlag) setFlag({ likelihood: r.aiFlag.likelihood, reason: r.aiFlag.reason });
+      if (r?.aiFlag) setFlag({ likelihood: r.aiFlag.likelihood, reason: r.aiFlag.reason, percent: r.aiFlag.confidencePercent });
       else if (r?.skipped) setAiCheckError(r.skipped);
       else if (r?.error) setAiCheckError(r.error);
     } catch (e) {
@@ -866,8 +867,8 @@ function SectionUploadCard({ profile, sectionDef, submission, onUpdated, studyId
       const { verdict, aiFlag } = await res.json();
       // aiFlag is deliberately ignored for the student view — see
       // isTeacherStudy below, which gates whether it's ever shown.
-      if (isTeacherStudy && aiFlag) setFlag({ likelihood: aiFlag.likelihood, reason: aiFlag.reason });
-      onUpdated(sectionDef.id, { ...submission, id: submissionId, file_name: file.name, ai_status: verdict.status, ai_score: verdict.scorePercent, ai_criteria: verdict.criteria, ai_remarks: verdict.remarks, ai_provider: verdict.provider, ai_flag_likelihood: aiFlag?.likelihood, ai_flag_reason: aiFlag?.reason });
+      if (isTeacherStudy && aiFlag) setFlag({ likelihood: aiFlag.likelihood, reason: aiFlag.reason, percent: aiFlag.confidencePercent });
+      onUpdated(sectionDef.id, { ...submission, id: submissionId, file_name: file.name, ai_status: verdict.status, ai_score: verdict.scorePercent, ai_criteria: verdict.criteria, ai_remarks: verdict.remarks, ai_provider: verdict.provider, ai_flag_likelihood: aiFlag?.likelihood, ai_flag_reason: aiFlag?.reason, ai_flag_percent: aiFlag?.confidencePercent });
     } catch (e) {
       setError(e.message);
     }
@@ -907,7 +908,7 @@ function SectionUploadCard({ profile, sectionDef, submission, onUpdated, studyId
       h("strong", null, "Teacher override: "), submission.teacher_verdict.score + "/100 — " + (submission.teacher_verdict.note || "")),
     isTeacherStudy && submission && h("div", { className: "no-print", style: { marginTop: 10 } },
       flag.likelihood && h("div", { style: { fontSize: 12.5, marginBottom: 8, padding: "10px 13px", borderRadius: 10, background: "var(--surface-3)", lineHeight: 1.5 } },
-        h("div", { style: { marginBottom: 4 } }, h(AiFlagBadge, { likelihood: flag.likelihood, reason: flag.reason })),
+        h("div", { style: { marginBottom: 4 } }, h(AiFlagBadge, { likelihood: flag.likelihood, reason: flag.reason, percent: flag.percent })),
         flag.reason && h("div", { style: { color: "var(--text-2)" } }, flag.reason),
         h("div", { style: { color: "var(--muted)", marginTop: 6, fontStyle: "italic" } },
           "Automated stylistic estimate from one language model — not a plagiarism or AI-detection verdict, not evidence.")
@@ -1109,7 +1110,7 @@ function TeacherOverviewTab({ subs, onRefresh }) {
               h("td", { "data-label": "Category" }, h("span", { className: "badge-purple" }, s.category || "—")),
               h("td", { "data-label": "Score" }, s.ai_score != null ? h("span", { style: { fontFamily: "var(--font-mono)", fontWeight: 600, color: "var(--text)" } }, s.ai_score) : "—"),
               h("td", { "data-label": "Status" }, h(StatusPill, { status: s.ai_status })),
-              h("td", { "data-label": "AI Signal" }, s.ai_flag_likelihood ? h(AiFlagBadge, { likelihood: s.ai_flag_likelihood, reason: s.ai_flag_reason }) : "—"),
+              h("td", { "data-label": "AI Signal" }, s.ai_flag_likelihood ? h(AiFlagBadge, { likelihood: s.ai_flag_likelihood, reason: s.ai_flag_reason, percent: s.ai_flag_percent }) : "—"),
               h("td", { "data-label": "Provider" }, s.ai_provider || "—")
             ))
           )
@@ -1124,7 +1125,7 @@ function SubmissionDetailModal({ submission, onClose, onSaved }) {
   const [score, setScore] = useState(submission.teacher_verdict?.score ?? submission.ai_score ?? 0);
   const [note, setNote] = useState(submission.teacher_verdict?.note || "");
   const [saving, setSaving] = useState(false);
-  const [flag, setFlag] = useState({ likelihood: submission.ai_flag_likelihood, reason: submission.ai_flag_reason });
+  const [flag, setFlag] = useState({ likelihood: submission.ai_flag_likelihood, reason: submission.ai_flag_reason, percent: submission.ai_flag_percent });
   const [checkingAi, setCheckingAi] = useState(false);
   const [aiCheckError, setAiCheckError] = useState("");
 
@@ -1134,7 +1135,7 @@ function SubmissionDetailModal({ submission, onClose, onSaved }) {
       const res = await authedFetch("/api/admin/detect-ai", { method: "POST", body: JSON.stringify({ ids: [submission.id] }) });
       const { results } = await res.json();
       const r = results?.[submission.id];
-      if (r?.aiFlag) setFlag({ likelihood: r.aiFlag.likelihood, reason: r.aiFlag.reason });
+      if (r?.aiFlag) setFlag({ likelihood: r.aiFlag.likelihood, reason: r.aiFlag.reason, percent: r.aiFlag.confidencePercent });
       else if (r?.skipped) setAiCheckError(r.skipped);
       else if (r?.error) setAiCheckError(r.error);
     } catch (e) {
@@ -1175,7 +1176,7 @@ function SubmissionDetailModal({ submission, onClose, onSaved }) {
           h("span", null, c.name), h("span", { className: "rubric-score" }, c.score + "/" + c.max)))),
       submission.ai_remarks && h("p", { style: { fontSize: 13, lineHeight: 1.6, color: "var(--text-2)", marginTop: submission.ai_criteria ? 4 : 0 } }, submission.ai_remarks),
       flag.likelihood && h("div", { style: { fontSize: 12.5, marginTop: 12, padding: "10px 13px", borderRadius: 10, background: "var(--surface-3)", lineHeight: 1.5 } },
-        h("div", { style: { marginBottom: 4 } }, h(AiFlagBadge, { likelihood: flag.likelihood, reason: flag.reason })),
+        h("div", { style: { marginBottom: 4 } }, h(AiFlagBadge, { likelihood: flag.likelihood, reason: flag.reason, percent: flag.percent })),
         flag.reason && h("div", { style: { color: "var(--text-2)" } }, flag.reason),
         h("div", { style: { color: "var(--muted)", marginTop: 6, fontStyle: "italic" } },
           "Automated stylistic estimate from one language model — not a plagiarism or AI-detection verdict, not evidence, and not a substitute for your own judgment. For your awareness only.")
